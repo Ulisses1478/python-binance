@@ -20,16 +20,16 @@ with open("README.rst", "r") as fh:
     long_description = fh.read()
 
 setup(
-    name='python-binance',
+    name='binance-sync',
     version=version,
     packages=['binance'],
     description='Binance REST API python implementation',
     long_description=long_description,
     long_description_content_type="text/x-rst",
-    url='https://github.com/sammchardy/python-binance',
-    author='Sam McHardy',
+    url='https://github.com/Ulisses1478/python-binance',
+    author='Sam McHardy, Ulisses',
     license='MIT',
-    author_email='',
+    author_email='ulisses@hevex.app',
     install_requires=[
         'requests', 'six', 'dateparser', 'aiohttp', 'ujson', 'websockets==9.1'
     ],
