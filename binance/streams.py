@@ -45,9 +45,9 @@ class ReconnectingWebsocket:
     MAX_QUEUE_SIZE = 999999999
 
     def __init__(
-        self, loop, url: str, path: Optional[str] = None, prefix: str = 'ws/', is_binary: bool = False, exit_coro=None
+        self, url: str, path: Optional[str] = None, prefix: str = 'ws/', is_binary: bool = False, exit_coro=None
     ):
-        self._loop = loop or asyncio.get_event_loop()
+        self._loop = asyncio.get_event_loop()
         self._log = logging.getLogger(__name__)
         self._path = path
         self._url = url
@@ -59,7 +59,7 @@ class ReconnectingWebsocket:
         self._socket = None
         self.ws: Optional[ws.WebSocketClientProtocol] = None
         self.ws_state = WSListenerState.INITIALISING
-        self._queue = asyncio.Queue(loop=self._loop)
+        self._queue = asyncio.Queue()
         self._handle_read_loop = None
 
     async def __aenter__(self):
@@ -200,7 +200,7 @@ class ReconnectingWebsocket:
         return res
 
     async def _wait_for_reconnect(self):
-        while self.ws_state != WSListenerState.STREAMING:
+        while self.ws_state != WSListenerState.STREAMING and self.ws_state != WSListenerState.EXITING:
             await sleep(0.1)
 
     def _get_reconnect_wait(self, attempts: int) -> int:
@@ -224,10 +224,10 @@ class ReconnectingWebsocket:
 class KeepAliveWebsocket(ReconnectingWebsocket):
 
     def __init__(
-        self, client: AsyncClient, loop, url, keepalive_type, prefix='ws/', is_binary=False, exit_coro=None,
+        self, client: AsyncClient, url, keepalive_type, prefix='ws/', is_binary=False, exit_coro=None,
         user_timeout=None
     ):
-        super().__init__(loop=loop, path=None, url=url, prefix=prefix, is_binary=is_binary, exit_coro=exit_coro)
+        super().__init__(path=None, url=url, prefix=prefix, is_binary=is_binary, exit_coro=exit_coro)
         self._keepalive_type = keepalive_type
         self._client = client
         self._user_timeout = user_timeout or KEEPALIVE_TIMEOUT
@@ -309,7 +309,7 @@ class BinanceSocketManager:
     WEBSOCKET_DEPTH_10 = '10'
     WEBSOCKET_DEPTH_20 = '20'
 
-    def __init__(self, client: AsyncClient, loop=None, user_timeout=KEEPALIVE_TIMEOUT):
+    def __init__(self, client: AsyncClient, user_timeout=KEEPALIVE_TIMEOUT):
         """Initialise the BinanceSocketManager
 
         :param client: Binance API client
@@ -323,7 +323,7 @@ class BinanceSocketManager:
         self.VSTREAM_TESTNET_URL = self.VSTREAM_TESTNET_URL.format(client.tld)
 
         self._conns = {}
-        self._loop = loop or asyncio.get_event_loop()
+        self._loop = asyncio.get_event_loop()
         self._client = client
         self._user_timeout = user_timeout
 
@@ -344,7 +344,6 @@ class BinanceSocketManager:
         conn_id = f'{socket_type}_{path}'
         if conn_id not in self._conns:
             self._conns[conn_id] = ReconnectingWebsocket(
-                loop=self._loop,
                 path=path,
                 url=self._get_stream_url(stream_url),
                 prefix=prefix,
@@ -361,7 +360,6 @@ class BinanceSocketManager:
         if conn_id not in self._conns:
             self._conns[conn_id] = KeepAliveWebsocket(
                 client=self._client,
-                loop=self._loop,
                 url=self._get_stream_url(stream_url),
                 keepalive_type=path,
                 prefix=prefix,
@@ -819,6 +817,19 @@ class BinanceSocketManager:
         stream_name = '@indexPrice@1s' if fast else '@indexPrice'
         return self._get_futures_socket(symbol.lower() + stream_name, futures_type=FuturesType.COIN_M)
 
+    def futures_depth_socket(self, symbol: str, depth: str = '10', futures_type=FuturesType.USD_M):
+        """Subscribe to a futures depth data stream
+
+        https://binance-docs.github.io/apidocs/futures/en/#partial-book-depth-streams
+
+        :param symbol: required
+        :type symbol: str
+        :param depth: optional Number of depth entries to return, default 10.
+        :type depth: str
+        :param futures_type: use USD-M or COIN-M futures default USD-M
+        """
+        return self._get_futures_socket(symbol.lower() + '@depth' + str(depth), futures_type=futures_type)
+
     def symbol_mark_price_socket(self, symbol: str, fast: bool = True, futures_type: FuturesType = FuturesType.USD_M):
         """Start a websocket for a symbol's futures mark price
         https://binance-docs.github.io/apidocs/futures/en/#mark-price-stream
@@ -1032,18 +1043,6 @@ class BinanceSocketManager:
         path = f'streams={"/".join(streams)}'
         return self._get_futures_socket(path, prefix='stream?', futures_type=futures_type)
 
-    def futures_depth_socket(self, symbol: str, depth: str = '10', futures_type: FuturesType = FuturesType.USD_M):
-        """Subscribe to a depth data stream
-
-        https://binance-docs.github.io/apidocs/futures/en/#partial-book-depth-streams
-
-        :param symbol: required
-        :type symbol: str
-        :param depth: optional Number of depth entries to return, default 10.
-        :type depth: str
-        """
-        return self._get_futures_socket(symbol.lower() + '@depth' + str(depth), futures_type=futures_type)
-
     def user_socket(self):
         """Start a websocket for user data
 
@@ -1099,7 +1098,10 @@ class BinanceSocketManager:
 
         Message Format - see Binance API docs for all types
         """
-        return self._get_account_socket('coin_futures', stream_url=self.DSTREAM_URL)
+        stream_url = self.DSTREAM_URL
+        if self.testnet:
+            stream_url = self.DSTREAM_TESTNET_URL
+        return self._get_account_socket('coin_futures', stream_url=stream_url)
 
     def isolated_margin_socket(self, symbol: str):
         """Start a websocket for isolated margin data
@@ -1185,7 +1187,7 @@ class ThreadedWebsocketManager(ThreadedApiManager):
 
     async def _before_socket_listener_start(self):
         assert self._client
-        self._bsm = BinanceSocketManager(client=self._client, loop=self._loop)
+        self._bsm = BinanceSocketManager(client=self._client)
 
     def _start_async_socket(
         self, callback: Callable, socket_name: str, params: Dict[str, Any], path: Optional[str] = None
@@ -1421,6 +1423,13 @@ class ThreadedWebsocketManager(ThreadedApiManager):
             params={}
         )
 
+    def start_futures_user_socket(self, callback: Callable) -> str:
+        return self._start_async_socket(
+            callback=callback,
+            socket_name='futures_user_socket',
+            params={}
+        )
+
     def start_margin_socket(self, callback: Callable) -> str:
         return self._start_async_socket(
             callback=callback,
@@ -1488,5 +1497,16 @@ class ThreadedWebsocketManager(ThreadedApiManager):
             params={
                 'symbol': symbol,
                 'depth': depth
+            }
+        )
+
+    def start_futures_depth_socket(self, callback: Callable, symbol: str, depth: str = '10', futures_type=FuturesType.USD_M) -> str:
+        return self._start_async_socket(
+            callback=callback,
+            socket_name='futures_depth_socket',
+            params={
+                'symbol': symbol,
+                'depth': depth,
+                'futures_type': futures_type
             }
         )
